@@ -1,0 +1,48 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "windows"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Admin {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  password  String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("admins")
+}
+
+model QRSettings {
+  id        Int      @id @default(autoincrement())
+  qrPosition String  @default("custom") @map("qr_position")
+  qrSize    Int      @default(50) @map("qr_size")
+  customX   Int      @default(30) @map("custom_x")
+  customY   Int      @default(30) @map("custom_y")
+  applyTo   String   @default("all") @map("apply_to")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("qr_settings")
+}
+
+model Document {
+  id                String   @id @default(cuid())
+  title             String
+  originalFilePath  String   @map("original_file_path")
+  processedFilePath String?  @map("processed_file_path")
+  qrToken           String   @unique @map("qr_token")
+  qrUrl             String   @map("qr_url")
+  qrImagePath       String?  @map("qr_image_path")
+  processingStatus  String   @default("PROCESSING") @map("processing_status")
+  contractData      String?  @map("contract_data")
+  isDataFilled      Boolean  @default(false) @map("is_data_filled")
+  uploadDate        DateTime @default(now()) @map("upload_date")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@map("documents")
+}

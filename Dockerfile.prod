@@ -1,0 +1,46 @@
+# Build frontend
+FROM node:20-alpine AS frontend-builder
+WORKDIR /app/frontend
+COPY frontend-main/package*.json ./
+RUN npm ci
+COPY frontend-main/ .
+RUN npm run build
+
+# Build backend
+FROM node:20-alpine AS backend-builder
+WORKDIR /app
+COPY backend-qr-master/package*.json ./
+RUN npm ci && npm cache clean --force
+COPY backend-qr-master/prisma ./prisma
+RUN npx --no-install prisma generate
+
+# Production stage
+FROM node:20-alpine
+WORKDIR /app
+
+# Install dumb-init for proper signal handling
+RUN apk add --no-cache dumb-init
+
+# Copy from backend builder
+COPY --from=backend-builder /app/node_modules ./node_modules
+COPY --from=backend-builder /app/prisma ./prisma
+
+# Copy backend application
+COPY backend-qr-master/ .
+
+# Copy frontend build to backend public folder
+COPY --from=frontend-builder /app/frontend/dist ./public
+
+# Create upload directories
+RUN mkdir -p uploads/originals uploads/processed uploads/qrcodes && \
+    chown -R node:node /app
+
+USER node
+
+EXPOSE 5000
+
+# Use dumb-init to handle signals properly
+ENTRYPOINT ["dumb-init", "--"]
+
+# Run migrations and start app
+CMD ["sh", "-c", "npx prisma db push --skip-generate && npx prisma db seed && node src/app.js"]

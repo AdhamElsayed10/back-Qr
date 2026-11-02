@@ -1,0 +1,15 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "dockerfile",
+    "dockerfile": "Dockerfile.prod"
+  },
+  "deploy": {
+    "startCommand": "sh -c 'node node_modules/prisma/build/index.js db push --skip-generate && node prisma/seed.js && node src/app.js'",
+    "restartPolicyType": "on_failure",
+    "restartPolicyMaxRetries": 5,
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 30,
+    "port": 5000
+  }
+}
