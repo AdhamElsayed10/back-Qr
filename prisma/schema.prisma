@@ -24,6 +24,10 @@ model QRSettings {
   customX   Int      @default(30) @map("custom_x")
   customY   Int      @default(30) @map("custom_y")
   applyTo   String   @default("all") @map("apply_to")
+  publicValidityDays Int     @default(30) @map("public_validity_days")
+  publicExpirySource String  @default("issue") @map("public_expiry_source")
+  publicAlertText    String  @default("تنبيه: صلاحية هذه الإفادة {days} يوماً فقط من تاريخ الإصدار.") @map("public_alert_text")
+  publicShowAlert    Boolean @default(true) @map("public_show_alert")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("qr_settings")

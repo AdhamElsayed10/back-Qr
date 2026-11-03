@@ -276,6 +276,31 @@ function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+function sanitizePublicPage(value) {
+  if (!isPlainObject(value)) return null;
+
+  const issueDate = typeof value.issueDate === 'string' && DATE_ONLY.test(value.issueDate.trim())
+    ? value.issueDate.trim()
+    : '';
+  const expiryDate = typeof value.expiryDate === 'string' && DATE_ONLY.test(value.expiryDate.trim())
+    ? value.expiryDate.trim()
+    : '';
+
+  let validityDays = '';
+  if (value.validityDays !== undefined && value.validityDays !== null && value.validityDays !== '') {
+    const days = parseInt(value.validityDays, 10);
+    if (!Number.isNaN(days)) validityDays = Math.max(1, Math.min(3650, days));
+  }
+
+  const result = { issueDate, expiryDate, validityDays };
+  if (value.showAlert !== undefined) {
+    result.showAlert = value.showAlert === true || value.showAlert === 'true' || value.showAlert === 1 || value.showAlert === '1';
+  }
+  return result;
+}
+
 // Internal keys (e.g. _pdfBase64) must survive manual edits — ignore client-sent ones.
 function mergeContractData(existing, incoming) {
   const merged = { ...(existing || {}) };
@@ -339,14 +364,21 @@ exports.updateDocumentData = async (req, res) => {
       return res.status(400).json({ error: 'A contractData object is required' });
     }
 
+    // Editing only the public page must not re-mark the document's contract data as filled.
+    const incomingKeys = Object.keys(incoming).filter((key) => key !== 'publicPage' && key !== '_pdfBase64');
+    const marksDataFilled = incomingKeys.length > 0;
+
     const merged = mergeContractData(parseStoredContractData(doc.contractData), incoming);
+    if (merged.publicPage !== undefined) {
+      merged.publicPage = sanitizePublicPage(merged.publicPage);
+    }
     const withDisplayMasks = applyDisplayMasks(merged);
 
     const updatedDoc = await prisma.document.update({
       where: { id: doc.id },
       data: {
-        contractData: JSON.stringify({ ...withDisplayMasks, isDataFilled: true }),
-        isDataFilled: true,
+        contractData: JSON.stringify(marksDataFilled ? { ...withDisplayMasks, isDataFilled: true } : withDisplayMasks),
+        ...(marksDataFilled ? { isDataFilled: true } : {}),
       },
     });
 

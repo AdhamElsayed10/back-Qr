@@ -14,13 +14,78 @@ function escapeHtml(value = '') {
     .replace(/'/g, '&#039;');
 }
 
+const DEFAULT_PUBLIC_ALERT_TEXT = 'تنبيه: صلاحية هذه الإفادة {days} يوماً فقط من تاريخ الإصدار.';
+
+function parseDateLoose(value) {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  const text = String(value).trim();
+  if (!text) return null;
+  const iso = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (iso) {
+    const d = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]), 12, 0, 0, 0);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  const dmy = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (dmy) {
+    const d = new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1]), 12, 0, 0, 0);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  const d = new Date(text);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 function fmtDateLtr(value) {
-  if (!value) return '—';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return String(value);
+  const d = parseDateLoose(value);
+  if (!d) return '—';
   const dd = String(d.getDate()).padStart(2, '0');
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   return `${dd}/${mm}/${d.getFullYear()}`;
+}
+
+function addDays(date, days) {
+  const result = new Date(date.getTime());
+  result.setDate(result.getDate() + Math.max(0, parseInt(days, 10) || 0));
+  return result;
+}
+
+function isTruthyFlag(value) {
+  return value === true || value === 1 || value === '1' || value === 'true' || value === 'on';
+}
+
+function computePublicPage(doc, contractData, settings) {
+  const config = settings || {};
+  const override = (contractData && contractData.publicPage) || {};
+
+  const issueDate = parseDateLoose(override.issueDate) || parseDateLoose(doc.uploadDate);
+
+  const rawDays = override.validityDays !== undefined && override.validityDays !== null && override.validityDays !== ''
+    ? parseInt(override.validityDays, 10)
+    : parseInt(config.publicValidityDays, 10);
+  const validityDays = Number.isNaN(rawDays) ? 30 : Math.max(1, Math.min(3650, rawDays));
+
+  let expiryDate = parseDateLoose(override.expiryDate);
+  if (!expiryDate) {
+    const source = config.publicExpirySource === 'contract' ? 'contract' : 'issue';
+    const contract = contractData && contractData.contractDetails ? contractData.contractDetails : {};
+    if (source === 'contract') expiryDate = parseDateLoose(contract.endDate);
+    if (!expiryDate && issueDate) expiryDate = addDays(issueDate, validityDays);
+  }
+
+  const showAlert = override.showAlert !== undefined
+    ? isTruthyFlag(override.showAlert)
+    : (config.publicShowAlert === undefined ? true : isTruthyFlag(config.publicShowAlert));
+
+  const alertTemplate = String(config.publicAlertText || DEFAULT_PUBLIC_ALERT_TEXT);
+  const alertText = alertTemplate.replace(/\{days\}/g, String(validityDays));
+
+  return {
+    issueDate: fmtDateLtr(issueDate),
+    expiryDate: fmtDateLtr(expiryDate),
+    validityDays,
+    showAlert,
+    alertText,
+  };
 }
 
 function loadPdfBuffer(doc) {
@@ -151,6 +216,8 @@ router.get('/:token/data', async (req, res) => {
       if (doc.contractData) contractData = JSON.parse(doc.contractData);
     } catch (_) {}
 
+    const settings = await prisma.qRSettings.findFirst();
+
     res.json({
       success: true,
       id: doc.id,
@@ -159,6 +226,7 @@ router.get('/:token/data', async (req, res) => {
       isDataFilled: Boolean(doc.isDataFilled),
       processingStatus: doc.processingStatus,
       contractData,
+      publicPage: computePublicPage(doc, contractData, settings),
       uploadDate: doc.uploadDate,
     });
   } catch (err) {
@@ -224,12 +292,15 @@ const ALERT_ICON = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" 
 const FILE_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#059669" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>';
 const DOWNLOAD_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>';
 
-function renderVerificationPage({ token, docTitle, expiry, issued, downloadUrl, filled }) {
+function renderVerificationPage({ token, docTitle, expiry, issued, downloadUrl, filled, showAlert = true, alertText = '' }) {
   const badge = filled ? 'VERIFIED' : 'RECORDED';
   const subtitle = filled ? 'وثيقة إفادة معتمدة وموثّقة رسمياً' : 'وثيقة مرفوعة للتحقق';
   const safeTitle = escapeHtml(docTitle);
+  const alertHtml = showAlert && alertText
+    ? `<div class="validity-alert" role="alert">${ALERT_ICON}<span>${escapeHtml(alertText)}</span></div>`
+    : '';
 
-  return `<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=5.0,user-scalable=yes"><title>${safeTitle} - التحقق الرسمي</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Cairo:wght@500;600;700;800&display=swap" rel="stylesheet"><style>${PAGE_STYLE}</style></head><body><header class="verified-strip"><div class="verified-strip-inner"><span class="verified-badge-pill"><span class="verified-badge-icon">${CHECK_ICON}</span><span>${badge}</span></span><span class="verified-title">${subtitle}</span></div></header><main class="page-wrap"><section class="expiry-section"><div class="expiry-row">${CALENDAR_ICON}<span>تاريخ انتهاء الصلاحية (Expiry Date):</span><span class="expiry-date-value">${escapeHtml(expiry)}</span></div><div class="issue-sub">تاريخ إصدار الإفادة: <span dir="ltr">${escapeHtml(issued)}</span></div></section><hr class="section-divider"><div class="validity-alert" role="alert">${ALERT_ICON}<span>تنبيه: صلاحية هذه الإفادة 30 يوماً فقط من تاريخ الإصدار.</span></div><section class="viewer-card"><div class="viewer-toolbar"><div class="viewer-doc-name" title="${safeTitle}">${FILE_ICON}<span>${safeTitle}</span></div><div class="viewer-actions"><button type="button" class="zoom-btn" id="zoomOutBtn" title="تصغير">−</button><button type="button" class="zoom-btn" id="zoomResetBtn" title="الحجم الطبيعي">100%</button><button type="button" class="zoom-btn" id="zoomInBtn" title="تكبير">+</button><a class="dl-btn" href="${downloadUrl}" download="${safeTitle}">${DOWNLOAD_ICON}<span>تحميل PDF</span></a></div></div><div class="viewer-stage" id="viewerStage"><div class="pages-wrap" id="pagesWrap"><img class="doc-page-img" src="/pdf/${encodeURIComponent(token)}/page/1" alt="${safeTitle} - صفحة 1" decoding="async"></div></div></section></main><script>${ZOOM_SCRIPT}</script></body></html>`;
+  return `<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=5.0,user-scalable=yes"><title>${safeTitle} - التحقق الرسمي</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Cairo:wght@500;600;700;800&display=swap" rel="stylesheet"><style>${PAGE_STYLE}</style></head><body><header class="verified-strip"><div class="verified-strip-inner"><span class="verified-badge-pill"><span class="verified-badge-icon">${CHECK_ICON}</span><span>${badge}</span></span><span class="verified-title">${subtitle}</span></div></header><main class="page-wrap"><section class="expiry-section"><div class="expiry-row">${CALENDAR_ICON}<span>تاريخ انتهاء الصلاحية (Expiry Date):</span><span class="expiry-date-value">${escapeHtml(expiry)}</span></div><div class="issue-sub">تاريخ إصدار الإفادة: <span dir="ltr">${escapeHtml(issued)}</span></div></section><hr class="section-divider">${alertHtml}<section class="viewer-card"><div class="viewer-toolbar"><div class="viewer-doc-name" title="${safeTitle}">${FILE_ICON}<span>${safeTitle}</span></div><div class="viewer-actions"><button type="button" class="zoom-btn" id="zoomOutBtn" title="تصغير">−</button><button type="button" class="zoom-btn" id="zoomResetBtn" title="الحجم الطبيعي">100%</button><button type="button" class="zoom-btn" id="zoomInBtn" title="تكبير">+</button><a class="dl-btn" href="${downloadUrl}" download="${safeTitle}">${DOWNLOAD_ICON}<span>تحميل PDF</span></a></div></div><div class="viewer-stage" id="viewerStage"><div class="pages-wrap" id="pagesWrap"><img class="doc-page-img" src="/pdf/${encodeURIComponent(token)}/page/1" alt="${safeTitle} - صفحة 1" decoding="async"></div></div></section></main><script>${ZOOM_SCRIPT}</script></body></html>`;
 }
 
 // GET /pdf/:token - public verification page opened by scanning the QR code
@@ -244,6 +315,8 @@ router.get('/:token', async (req, res) => {
         if (doc.contractData) contractData = JSON.parse(doc.contractData);
       } catch (_) {}
 
+      const settings = await prisma.qRSettings.findFirst();
+
       return res.json({
         success: true,
         id: doc.id,
@@ -252,6 +325,7 @@ router.get('/:token', async (req, res) => {
         isDataFilled: Boolean(doc.isDataFilled),
         processingStatus: doc.processingStatus,
         contractData,
+        publicPage: computePublicPage(doc, contractData, settings),
         uploadDate: doc.uploadDate,
       });
     }
@@ -264,20 +338,20 @@ router.get('/:token', async (req, res) => {
       console.error('[Public Route] Failed to parse contract data:', e);
     }
 
+    const settings = await prisma.qRSettings.findFirst();
+    const publicPage = computePublicPage(doc, contractData, settings);
     const docTitle = doc.title || 'المستند';
     const downloadUrl = `/pdf/${encodeURIComponent(req.params.token)}/file?download=1`;
-    const contract = contractData && contractData.contractDetails ? contractData.contractDetails : {};
-
-    const expiry = contract.endDate ? fmtDateLtr(contract.endDate) : '—';
-    const issued = fmtDateLtr(doc.uploadDate);
 
     return res.type('html').send(renderVerificationPage({
       token: req.params.token,
       docTitle,
-      expiry,
-      issued,
+      expiry: publicPage.expiryDate,
+      issued: publicPage.issueDate,
       downloadUrl,
       filled: isDataFilled,
+      showAlert: publicPage.showAlert,
+      alertText: publicPage.alertText,
     }));
   } catch (err) {
     console.error('[Public Route] Error rendering page:', err);
